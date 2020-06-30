@@ -1,5 +1,6 @@
 #[
   Wrapper for the GuidedHacking.com DLL Injector Library
+  Credits to Broihon for the cpp library.
   https://guidedhacking.com/resources/guided-hacking-dll-injector.4/
 ]#
 
