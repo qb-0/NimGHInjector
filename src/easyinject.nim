@@ -17,7 +17,7 @@ proc Inject*(pid: int32, path: cstring, injMode: INJECTION_MODE, injMethod: LAUN
     flags: varargs[int]): tuple[result: string, data: INJECTIONDATAA] =
   var iD = INJECTIONDATAA(
     ProcessID: pid,
-    szDllPath: path.dllpath,
+    szDllPath: dllpath path,
     Mode: injMode,
     Method: injMethod,
     Flags: flags.orArgs
