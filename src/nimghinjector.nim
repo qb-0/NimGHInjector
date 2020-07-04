@@ -27,10 +27,10 @@ const
   INJ_MAX_FLAGS* = 0x000001FF
 
 type
-  INJECTION_MODE* = enum
+  INJECTION_MODE* {.size: sizeof(cint).} = enum
     IM_LoadLibrary, IM_LdrLoadDll, IM_ManualMap
 
-  LAUNCH_METHOD* = enum
+  LAUNCH_METHOD* {.size: sizeof(cint).} = enum
     LM_NtCreateThreadEx,
     LM_HijackThread,
     LM_SetWindowsHookEx,
