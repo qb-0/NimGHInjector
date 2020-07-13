@@ -6,8 +6,8 @@
 
 when defined(cpu64):
   const ghInjLib* = "GH Injector - x64.dll"
-  {.passL: "-static-libgcc -static-libstdc++".}
 else:
+  {.passL: "-static-libgcc -static-libstdc++".}
   const ghInjLib* = "GH Injector - x86.dll"
 
 const 
