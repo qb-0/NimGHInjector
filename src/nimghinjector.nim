@@ -1,9 +1,3 @@
-#[
-  Wrapper for the GuidedHacking.com DLL Injector Library
-  Credits to Broihon for the cpp library.
-  https://guidedhacking.com/resources/guided-hacking-dll-injector.4/
-]#
-
 when defined(cpu64):
   const ghInjLib* = "GH Injector - x64.dll"
 else:
@@ -14,50 +8,228 @@ const
   MAX_PATH* = 260
 
 const
-  # Injection Flags
-  INJ_ERASE_HEADER* = 0x00000001
-  INJ_FAKE_HEADER* = 0x00000002
-  INJ_UNLINK_FROM_PEB* = 0x00000004
-  INJ_SHIFT_MODULE* = 0x00000008
-  INJ_CLEAN_DATA_DIR* = 0x00000010
-  INJ_THREAD_CREATE_CLOAKED* = 0x00000020
-  INJ_SCRAMBLE_DLL_NAME* = 0x00000040
-  INJ_LOAD_DLL_COPY* = 0x00000080
-  INJ_HIJACK_HANDLE* = 0x00000100
-  INJ_MAX_FLAGS* = 0x000001FF
+  # Cloaking options
+  ## (1) ignored when manual mapping
+  ## (2) launch method must be NtCreateThreadEx, ignored otherwise
+  INJ_ERASE_HEADER* = 0x00000001            # replaces the first 0x1000 bytes of the dll with 0's (takes priority over INJ_FAKE_HEADER if both are specified)
+  INJ_FAKE_HEADER* = 0x00000002             # replaces the dlls header with the header of the ntdll.dll (superseded by INJ_ERASE_HEADER if both are specified)
+  INJ_UNLINK_FROM_PEB* = 0x00000004         # unlinks the module from the process enviroment block (1)
+  INJ_THREAD_CREATE_CLOAKED* = 0x00000008   # passes certain flags to NtCreateThreadEx to make the thread creation more stealthy (2)
+  INJ_SCRAMBLE_DLL_NAME* = 0x00000010       # randomizes the dll name on disk before injecting it
+  INJ_LOAD_DLL_COPY* = 0x00000020           # loads a copy of the dll from %temp% directory
+  INJ_HIJACK_HANDLE* = 0x00000040           # tries to a hijack a handle from another process instead of using OpenProcess
+
+const
+  # Manual mapping options
+  INJ_MM_CLEAN_DATA_DIR* = 0x00010000
+  INJ_MM_RESOLVE_IMPORTS* = 0x00020000
+  INJ_MM_RESOLVE_DELAY_IMPORTS* = 0x00040000
+  INJ_MM_EXECUTE_TLS* = 0x00080000
+  INJ_MM_ENABLE_EXCEPTIONS* = 0x00100000
+  INJ_MM_SET_PAGE_PROTECTIONS* = 0x00200000
+  INJ_MM_INIT_SECURITY_COOKIE* = 0x00400000
+  INJ_MM_RUN_DLL_MAIN* = 0x00800000
+  MM_DEFAULT* = (
+    INJ_MM_RESOLVE_IMPORTS or INJ_MM_RESOLVE_DELAY_IMPORTS or
+    INJ_MM_INIT_SECURITY_COOKIE or INJ_MM_EXECUTE_TLS or
+    INJ_MM_ENABLE_EXCEPTIONS or INJ_MM_RUN_DLL_MAIN or
+    INJ_MM_SET_PAGE_PROTECTIONS
+  )
 
 type
-  INJECTION_MODE* {.size: sizeof(cint).} = enum
-    IM_LoadLibrary, IM_LdrLoadDll, IM_ManualMap
+  # enum to define the injection mode
+  injectionMode* {.size: sizeof(cint).} = enum
+    IM_LoadLibraryExW,
+    IM_LdrLoadDll,
+    IM_LdrpLoadDll,
+    IM_LdrpLoadDllInternal,
+    IM_ManualMap
 
-  LAUNCH_METHOD* {.size: sizeof(cint).} = enum
+  # enum which is used to select the method to execute the shellcode
+  lunchMethod* {.size: sizeof(cint).} = enum
     LM_NtCreateThreadEx,
     LM_HijackThread,
     LM_SetWindowsHookEx,
-    LM_QueueUserAPC,
-    LM_SetWindowLong
+    LM_QueueUserAPC
 
-  INJECTIONDATAA* {.bycopy.} = object
-    LastErrorCode*: cint                     ## used to store the error code of the injection
-    szDllPath*: array[MAX_PATH * 2, char]    ## fullpath to the dll to inject
-    ProcessID*: cint                         ## process identifier of the target process
-    Mode*: INJECTION_MODE                    ## injection mode
-    Method*: LAUNCH_METHOD                   ## method to execute the remote shellcode
-    Flags*: cint                             ## combination of the flags defined above
-    hHandleValue*: cint                      ## optional value to identify a handle in a process
-    hDllOut*: cint                           ## returned image base of the injection
+  # ansi version of the info structure
+  injectionData* {.bycopy.} = object
+    szDllPath*: array[MAX_PATH * 2, char]     # fullpath to the dll to inject
+    ProcessID*: cint                          # process identifier of the target process
+    Mode*: injectionMode                      # injection mode
+    Method*: lunchMethod                      # method to execute the remote shellcode
+    Flags*: cint                              # combination of the flags defined above
+    Timeout*: cint                            # timeout for DllMain return in milliseconds
+    hHandleValue*: cint                       # optional value to identify a handle in a process
+    hDllOut*: cint                            # returned image base of the injection
+    GenerateErrorLog*: bool                   # if true error data is generated and stored in GH_Inj_Log.txt
 
-  INJECTIONDATAW* {.bycopy.} = object
-    LastErrorCode*: int32
-    szDllPath*: array[MAX_PATH * 2, char]
-    szTargetProcessExeFileName*: ptr cstring ## exe name of the target process, this value gets set automatically and should be ignored
-    ProcessID*: cint
-    Mode*: INJECTION_MODE
-    Method*: LAUNCH_METHOD
-    Flags*: cint
-    hHandleValue*: int32
-    hDllOut*: cint
+const errors*: seq[tuple[code: int, name: string]] = @[
+  # Errors
+  (0x00000000, "SUCCESS"),
+  (0x00000001, "INJ_ERR_NO_DATA"),
+  (0x00000002, "INJ_ERR_INVALID_FILEPATH"),
+  (0x00000003, "INJ_ERR_STR_CONVERSION_TO_W_FAILED"),
+  (0x00000004, "INJ_ERR_STRINGC_XXX_FAIL"),
+  (0x00000005, "INJ_ERR_FILE_DOESNT_EXIST"),
+  (0x00000006, "INJ_ERR_INVALID_PID"),
+  (0x00000007, "INJ_ERR_CANT_OPEN_PROCESS"),
+  (0x00000008, "INJ_ERR_INVALID_PROC_HANDLE"),
+  (0x00000009, "INJ_ERR_CANT_GET_EXE_FILENAME"),
+  (0x0000000A, "INJ_ERR_PLATFORM_MISMATCH"),
+  (0x0000000B, "INJ_ERR_CANT_GET_TEMP_DIR"),
+  (0x0000000C, "INJ_ERR_CANT_COPY_FILE"),
+  (0x0000000D, "INJ_ERR_CANT_RENAME_FILE"),
+  (0x0000000E, "INJ_ERR_INVALID_INJ_METHOD"),
+  (0x0000000F, "INJ_ERR_REMOTE_CODE_FAILED"),
+  (0x00000010, "INJ_ERR_WPM_FAIL"),
+  (0x00000011, "INJ_ERR_RPM_FAIL"),
+  (0x00000012, "INJ_ERR_GET_MODULE_HANDLE_FAIL"),
+  (0x00000013, "INJ_ERR_CANT_FIND_MOD_PEB"),
+  (0x00000014, "INJ_ERR_UNLINKING_FAILED"),
+  (0x00000015, "INJ_ERR_OUT_OF_MEMORY_EXT"),
+  (0x00000016, "INJ_ERR_OUT_OF_MEMORY_INT"),
+  (0x00000017, "INJ_ERR_OUT_OF_MEMORY_NEW"),
+  (0x00000018, "INJ_ERR_IMAGE_CANT_RELOC"),
+  (0x00000019, "INJ_ERR_GET_SYMBOL_ADDRESS_FAILED"),
+  (0x0000001A, "INJ_ERR_GET_PROC_ADDRESS_FAIL"),
+  (0x0000001B, "INJ_ERR_VERIFY_RESULT_FAIL"),
+  (0x0000001C, "INJ_ERR_SYMBOL_INIT_NOT_DONE"),
+  (0x0000001D, "INJ_ERR_SYMBOL_INIT_FAIL"),
+  (0x0000001E, "INJ_ERR_SYMBOL_GET_FAIL"),
+  (0x0000001F, "INJ_ERR_CANT_GET_MODULE_PATH"),
+  (0x00000020, "INJ_ERR_FAILED_TO_LOAD_DLL"),
+  (0x00000021, "INJ_ERR_HIJACK_NO_HANDLES"),
+  (0x00000022, "INJ_ERR_HIJACK_NO_NATIVE_HANDLE"),
+  (0x00000023, "INJ_ERR_HIJACK_INJ_FAILED"),
+  (0x00000024, "INJ_ERR_HIJACK_OUT_OF_MEMORY_EXT"),
+  (0x00000025, "INJ_ERR_HIJACK_WPM_FAIL"),
+  (0x00000026, "INJ_ERR_HIJACK_INJECTW_MISSING"),
+  (0x00000027, "INJ_ERR_HIJACK_REMOTE_INJ_FAIL"),
+  (0x00000028, "INJ_ERR_LLEXW_FAILED"),
+  (0x00000029, "INJ_ERR_LDRLDLL_FAILED"),
+  (0x0000002A, "INJ_ERR_LDRPLDLL_FAILED"),
+  (0x0000002B, "INJ_ERR_LDRPLDLLINTERNAL_FAILED"),
+  (0x0000002C, "INJ_ERR_CANT_GET_PEB"),
+  (0x0000002D, "INJ_ERR_INVALID_PEB_DATA"),
+  (0x0000002E, "INJ_ERR_UPDATE_PROTECTION_FAILED"),
+  (0x0000002F, "INJ_ERR_WOW64_NTDLL_MISSING"),
+  (0x00000030, "INJ_ERR_INVALID_PATH_SEPERATOR"),
+  (0x00000031, "INJ_ERR_LDRP_PREPROCESS_FAILED"),
+  (0x00000032, "INJ_ERR_INVALID_POINTER"),
+  (0x00000033, "INJ_ERR_NOT_IMPLEMENTED"),
+  (0x00000034, "INJ_ERR_KERNEL32_MISSING"),
+  (0x00400001, "INJ_MM_ERR_NO_DATA"),
+  (0x00400002, "INJ_MM_ERR_NT_OPEN_FILE"),
+  (0x00400003, "INJ_MM_ERR_HEAP_ALLOC"),
+  (0x00400004, "INJ_MM_ERR_NT_READ_FILE"),
+  (0x00400005, "INJ_MM_ERR_SET_FILE_POSITION"),
+  (0x00400006, "INJ_MM_ERR_UPDATE_PAGE_PROTECTION"),
+  (0x00400007, "INJ_MM_ERR_CANT_GET_FILE_SIZE"),
+  (0x00400008, "INJ_MM_ERR_MEMORY_ALLOCATION_FAILED"),
+  (0x00400009, "INJ_MM_ERR_IMAGE_CANT_BE_RELOCATED"),
+  (0x0040000A, "INJ_MM_ERR_IMPORT_FAIL"),
+  (0x0040000B, "INJ_MM_ERR_DELAY_IMPORT_FAIL"),
+  (0x0040000C, "INJ_MM_ERR_ENABLING_SEH_FAILED"),
+  (0x0040000D, "INJ_MM_ERR_INVALID_HEAP_HANDLE"),
+  (0x0040000E, "INJ_MM_ERR_CANT_GET_PEB"),
+  (0x0040000F, "INJ_MM_ERR_INVALID_PEB_DATA"),
+  (0x10000001, "SR_ERR_CANT_QUERY_SESSION_ID"),
+  (0x10000002, "SR_ERR_INVALID_LAUNCH_METHOD"),
+  (0x10000003, "SR_ERR_NOT_LOCAL_SYSTEM"),
+  (0x10100001, "SR_NTCTE_ERR_NTCTE_MISSING"),
+  (0x10100002, "SR_NTCTE_ERR_PROC_INFO_FAIL"),
+  (0x10100003, "SR_NTCTE_ERR_CANT_ALLOC_MEM"),
+  (0x10100004, "SR_NTCTE_ERR_WPM_FAIL"),
+  (0x10100005, "SR_NTCTE_ERR_NTCTE_FAIL"),
+  (0x10100006, "SR_NTCTE_ERR_GET_CONTEXT_FAIL"),
+  (0x10100007, "SR_NTCTE_ERR_SET_CONTEXT_FAIL"),
+  (0x10100008, "SR_NTCTE_ERR_RESUME_FAIL"),
+  (0x10100009, "SR_NTCTE_ERR_REMOTE_TIMEOUT"),
+  (0x1010000A, "SR_NTCTE_ERR_GECT_FAIL"),
+  (0x1010000B, "SR_NTCTE_ERR_SHELLCODE_SETUP_FAIL"),
+  (0x1010000C, "SR_NTCTE_ERR_RPM_FAIL"),
+  (0x10200001, "SR_HT_ERR_PROC_INFO_FAIL"),
+  (0x10200002, "SR_HT_ERR_NO_THREADS"),
+  (0x10200003, "SR_HT_ERR_OPEN_THREAD_FAIL"),
+  (0x10200004, "SR_HT_ERR_SUSPEND_FAIL"),
+  (0x10200005, "SR_HT_ERR_GET_CONTEXT_FAIL"),
+  (0x10200006, "SR_HT_ERR_CANT_ALLOC_MEM"),
+  (0x10200007, "SR_HT_ERR_WPM_FAIL"),
+  (0x10200008, "SR_HT_ERR_SET_CONTEXT_FAIL"),
+  (0x10200009, "SR_HT_ERR_RESUME_FAIL"),
+  (0x1020000A, "SR_HT_ERR_REMOTE_TIMEOUT"),
+  (0x1020000B, "SR_HT_ERR_REMOTE_PENDING_TIMEOUT"),
+  (0x1020000C, "SR_HT_ERR_RPM_FAIL"),
+  (0x10300001, "SR_SWHEX_ERR_CANT_OPEN_INFO_TXT"),
+  (0x10300002, "SR_SWHEX_ERR_CANT_ALLOC_MEM"),
+  (0x10300003, "SR_SWHEX_ERR_WPM_FAIL"),
+  (0x10300004, "SR_SWHEX_ERR_WTSQUERY_FAIL"),
+  (0x10300005, "SR_SWHEX_ERR_DUP_TOKEN_FAIL"),
+  (0x10300006, "SR_SWHEX_ERR_GET_ADMIN_TOKEN_FAIL"),
+  (0x10300007, "SR_SWHEX_ERR_CANT_CREATE_PROCESS"),
+  (0x10300008, "SR_SWHEX_ERR_SWHEX_TIMEOUT"),
+  (0x10300009, "SR_SWHEX_ERR_REMOTE_TIMEOUT"),
+  (0x1030000A, "SR_SWHEX_ERR_RPM_FAIL"),
+  (0x1030000B, "SR_SWHEX_ERR_SWHEX_EXT_ERROR"),
+  (0x10400001, "SR_QUAPC_ERR_RTLQAW64_MISSING"),
+  (0x10400002, "SR_QUAPC_ERR_CANT_ALLOC_MEM"),
+  (0x10400003, "SR_QUAPC_ERR_WPM_FAIL"),
+  (0x10400004, "SR_QUAPC_ERR_PROC_INFO_FAIL"),
+  (0x10400005, "SR_QUAPC_ERR_NO_THREADS"),
+  (0x10400006, "SR_QUAPC_ERR_REMOTE_TIMEOUT"),
+  (0x10400007, "SR_QUAPC_ERR_RPM_FAIL"),
+  (0x20000001, "FILE_ERR_CANT_OPEN_FILE"),
+  (0x20000002, "FILE_ERR_INVALID_FILE_SIZE"),
+  (0x20000003, "FILE_ERR_INVALID_FILE"),
+  (0x30000001, "SM_ERR_INVALID_ARGC"),
+  (0x30000002, "SM_ERR_INVALID_ARGV"),
+  (0x30100001, "SWHEX_ERR_INVALID_PATH"),
+  (0x30100002, "SWHEX_ERR_CANT_OPEN_FILE"),
+  (0x30100003, "SWHEX_ERR_EMPTY_FILE"),
+  (0x30100004, "SWHEX_ERR_INVALID_INFO"),
+  (0x30100005, "SWHEX_ERR_ENUM_WINDOWS_FAIL"),
+  (0x30100006, "SWHEX_ERR_NO_WINDOWS"),
+  (0x40000001, "SYMBOL_ERR_CANT_OPEN_MODULE"),
+  (0x40000002, "SYMBOL_ERR_FILE_SIZE_IS_NULL"),
+  (0x40000003, "SYMBOL_ERR_CANT_ALLOC_MEMORY_NEW"),
+  (0x40000004, "SYMBOL_ERR_INVALID_FILE_ARCHITECTURE"),
+  (0x40000005, "SYMBOL_ERR_CANT_ALLOC_MEMORY"),
+  (0x40000006, "SYMBOL_ERR_NO_PDB_DEBUG_DATA"),
+  (0x40000007, "SYMBOL_ERR_PATH_DOESNT_EXIST"),
+  (0x40000008, "SYMBOL_ERR_CANT_CREATE_DIRECTORY"),
+  (0x40000008, "SYMBOL_ERR_CANT_CONVERT_PDB_GUID"),
+  (0x40000009, "SYMBOL_ERR_GUID_TO_ANSI_FAILED"),
+  (0x4000000A, "SYMBOL_ERR_DOWNLOAD_FAILED"),
+  (0x4000000B, "SYMBOL_ERR_CANT_ACCESS_PDB_FILE"),
+  (0x4000000C, "SYMBOL_ERR_CANT_OPEN_PDB_FILE"),
+  (0x4000000D, "SYMBOL_ERR_CANT_OPEN_PROCESS"),
+  (0x4000000E, "SYMBOL_ERR_SYM_INIT_FAIL"),
+  (0x4000000F, "SYMBOL_ERR_SYM_LOAD_TABLE"),
+  (0x40000010, "SYMBOL_ERR_ALREADY_INITIALIZED"),
+  (0x40000011, "SYMBOL_ERR_NOT_INITIALIZED"),
+  (0x40000012, "SYMBOL_ERR_IVNALID_SYMBOL_NAME"),
+  (0x40000013, "SYMBOL_ERR_SYMBOL_SEARCH_FAILED"),
+  (0x40000014, "SYMBOL_CANT_OPEN_PROCESS"),
+  (0x40000015, "SYMBOL_ERR_COPYFILE_FAILED"),
+  (0x40000016, "SYMBOL_ERR_INTERRUPT"),
+  (0x50000001, "HOOK_SCAN_ERR_INVALID_PROCESS_ID"),
+  (0x50000002, "HOOK_SCAN_ERR_CANT_OPEN_PROCESS"),
+  (0x50000003, "HOOK_SCAN_ERR_PLATFORM_MISMATCH"),
+  (0x50000004, "HOOK_SCAN_ERR_GETPROCADDRESS_FAILED"),
+  (0x50000005, "HOOK_SCAN_ERR_READ_PROCESS_MEMORY_FAILED"),
+  (0x50000006, "HOOK_SCAN_ERR_CANT_GET_OWN_MODULE_PATH"),
+  (0x50000007, "HOOK_SCAN_ERR_CREATE_EVENT_FAILED"),
+  (0x50000008, "HOOK_SCAN_ERR_CREATE_PROCESS_FAILED"),
+  (0x50000009, "HOOK_SCAN_ERR_WAIT_FAILED"),
+  (0x5000000A, "HOOK_SCAN_ERR_WAIT_TIMEOUT"),
+  (0x5000000B, "HOOK_SCAN_ERR_BUFFER_TOO_SMALL"),
+]
 
-proc InjectA*(pData: ptr INJECTIONDATAA): cint {.stdcall, importc, discardable, dynlib: ghInjLib.}
-proc InjectW*(pData: ptr INJECTIONDATAW): cint {.stdcall, importc, discardable, dynlib: ghInjLib.}
-
+proc dllpath*(path: cstring): array[MAX_PATH * 2, char] = copyMem(result.addr, path, path.len + 1)
+proc errName*(code: int): string =
+  for e in errors:
+    if e.code == code:
+      return e.name
+  return "Unknown"
+proc Inject*(pData: ptr injectionData): cint {.stdcall, importc: "InjectA", discardable, dynlib: ghInjLib.}

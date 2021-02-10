@@ -1,5 +1,5 @@
 import os
 
-echo "Waiting for DLL..."
+echo "Inject something..."
 while true:
   sleep(500)
